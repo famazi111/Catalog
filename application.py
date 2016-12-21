@@ -15,6 +15,7 @@ import requests
 import xml.etree.ElementTree as ET
 import os
 from werkzeug import secure_filename
+from functools import wraps
 
 app = Flask(__name__)
 
@@ -29,6 +30,17 @@ Base.metadata.bind = engine
 
 DBSession = sessionmaker(bind=engine)
 session = DBSession()
+
+
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'username' in login_session:
+            return f(*args, **kwargs)
+        else:
+            return redirect('/login')
+    return decorated_function
+
 
 # Start Authentication
 
@@ -216,11 +228,86 @@ def catalogJSON():
     return jsonify(Category=Cat)
 
 
+@app.route('/catalog/<string:category_name>/<string:item_title>/catalog.json')
+def catalogItemJSON(category_name, item_title):
+    category = session.query(Category).filter_by(name=category_name).one()
+    item = session.query(Item).filter_by(
+        category_id=category.id
+    ).filter_by(title=item_title).one()
+    return jsonify(item=item.serialize)
+
+
+@app.route('/catalog/<string:category_name>/catalog.json')
+def catalogCategoryJSON(category_name):
+    category = session.query(Category).filter_by(name=category_name).one()
+    Cat = []
+    items = session.query(Item).filter_by(category_id=category.id).all()
+    c = {
+        'id': category.id,
+        'name': category.name,
+        'Item': [i.serialize for i in items],
+    }
+
+    Cat.append(c)
+    return jsonify(Category=Cat)
+
+
 # XML API to view Catalog Information
 @app.route('/catalog.xml')
 def catalogXML():
     root = ET.Element('Categories')
     Categories = session.query(Category).order_by(asc(Category.name)).all()
+    for category in Categories:
+        categoryElemenet = ET.SubElement(root, 'category')
+        categoryElemenet.attrib['name'] = category.name
+        cat_id = ET.SubElement(categoryElemenet, 'id')
+        cat_id.text = str(category.id)
+        itemsElement = ET.SubElement(categoryElemenet, 'Item')
+        items = session.query(Item).filter_by(category_id=category.id).all()
+        for item in items:
+            itemElement = ET.SubElement(itemsElement, 'item')
+            itemElement.attrib['title'] = item.title
+            item_id = ET.SubElement(itemElement, 'id')
+            item_id.text = str(item.id)
+            item_description = ET.SubElement(itemElement, 'description')
+            item_description.text = item.description
+            item_cat_id = ET.SubElement(itemElement, 'cat_id')
+            item_cat_id.text = str(category.id)
+    output = ET.tostring(root, method="xml")
+    output = '<?xml version="1.0" encoding="UTF-8"?>' + output
+    return app.response_class(output, mimetype='application/xml')
+
+
+@app.route('/catalog/<string:category_name>/<string:item_title>/catalog.xml')
+def catalogItemXML(category_name, item_title):
+    root = ET.Element('Categories')
+    Categories = session.query(Category).filter_by(name=category_name).all()
+    for category in Categories:
+        categoryElemenet = ET.SubElement(root, 'category')
+        categoryElemenet.attrib['name'] = category.name
+        cat_id = ET.SubElement(categoryElemenet, 'id')
+        cat_id.text = str(category.id)
+        itemsElement = ET.SubElement(categoryElemenet, 'Item')
+        items = session.query(Item).filter_by(
+            category_id=category.id).filter_by(title=item_title).all()
+        for item in items:
+            itemElement = ET.SubElement(itemsElement, 'item')
+            itemElement.attrib['title'] = item.title
+            item_id = ET.SubElement(itemElement, 'id')
+            item_id.text = str(item.id)
+            item_description = ET.SubElement(itemElement, 'description')
+            item_description.text = item.description
+            item_cat_id = ET.SubElement(itemElement, 'cat_id')
+            item_cat_id.text = str(category.id)
+    output = ET.tostring(root, method="xml")
+    output = '<?xml version="1.0" encoding="UTF-8"?>' + output
+    return app.response_class(output, mimetype='application/xml')
+
+
+@app.route('/catalog/<string:category_name>/catalog.xml')
+def catalogCategoryXML(category_name):
+    root = ET.Element('Categories')
+    Categories = session.query(Category).filter_by(name=category_name).all()
     for category in Categories:
         categoryElemenet = ET.SubElement(root, 'category')
         categoryElemenet.attrib['name'] = category.name
@@ -277,9 +364,8 @@ def showCategory(category_name):
 
 # Create a new menu item
 @app.route('/catalog/item/new', methods=['GET', 'POST'])
+@login_required
 def newItem():
-    if 'username' not in login_session:
-        return redirect('/login')
     Categories = session.query(Category).order_by(asc(Category.name)).all()
     if request.method == 'POST':
         category = session.query(Category).filter_by(
@@ -353,9 +439,8 @@ def showItem(category_name, item_title):
 
 # Edit item
 @app.route('/catalog/<string:item_title>/edit', methods=['GET', 'POST'])
+@login_required
 def editItem(item_title):
-    if 'username' not in login_session:
-        return redirect('/login')
     item = session.query(Item).filter_by(title=item_title).first()
     category = item.category
     Categories = session.query(Category).order_by(asc(Category.name)).all()
@@ -426,6 +511,7 @@ def editItem(item_title):
 
 # Delete item
 @app.route('/catalog/<string:item_title>/delete', methods=['GET', 'POST'])
+@login_required
 def deleteItem(item_title):
     # First check for CSRF if POST request
     if request.method == 'POST':
@@ -435,8 +521,6 @@ def deleteItem(item_title):
         # Prevent CSRF, tokens are different
         elif login_session['csrf_token'] != request.form['csrf_token']:
             return createResponse('Invalid request.', 403)
-    if 'username' not in login_session:
-        return redirect('/login')
     item = session.query(Item).filter_by(title=item_title).first()
     category = item.category
     if login_session['user_id'] != item.user_id:
